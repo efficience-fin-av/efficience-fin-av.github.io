@@ -1,5 +1,6 @@
 import {buildModel,clean,norm,EPOCH,DAY} from './engine.mjs';
 import {readExcel} from './xlsx-reader.mjs';
+import {buildPodiums} from './podiums.mjs';
 
 const $=id=>document.getElementById(id),esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number=(x,d=1)=>x===null||x===undefined?'n.d.':new Intl.NumberFormat('fr-FR',{minimumFractionDigits:d,maximumFractionDigits:d}).format(x);
@@ -8,14 +9,14 @@ const hours=(x,d=1)=>x===null||x===undefined?'n.d.':number(x,d)+' h';
 const date=(serial,opts={day:'2-digit',month:'short'})=>new Intl.DateTimeFormat('fr-FR',{...opts,timeZone:'UTC'}).format(new Date(EPOCH+serial*DAY));
 const score=x=>x===null?'<span class="na">n.d.</span>':`<span class="score ${x>=1?'good':x>=.9?'warn':'bad'}">${pct(x)}</span>`;
 const cell=(x,d=2,red=false)=>x===null?'<span class="na">n.d.</span>':`<span class="${red?'red-value':''}" title="${esc(number(x,6))} h">${number(x,d)}</span>`;
-let model,initialData,currentData,currentSelection,page='overview',topMetric='global',lastVisibleRows=[],toastTimer,loading=false;
+let model,initialData,currentData,currentSelection,page='overview',topMetric='global',podiumMetric='global',lastVisibleRows=[],toastTimer,loading=false;
 let filters={week:'all',chef:'all',search:''};
 let dbPromise;
 function db(){if(!dbPromise)dbPromise=new Promise(resolve=>{try{const q=indexedDB.open('efficience-dashboard',1);q.onupgradeneeded=()=>q.result.createObjectStore('data');q.onsuccess=()=>resolve(q.result);q.onerror=()=>resolve(null);}catch{resolve(null);}});return dbPromise;}
 async function stored(){const d=await db();if(!d)return null;return new Promise(resolve=>{try{const q=d.transaction('data').objectStore('data').get('last');q.onsuccess=()=>resolve(q.result||null);q.onerror=()=>resolve(null);}catch{resolve(null);}});}
 async function persist(raw){const d=await db();if(!d)return;return new Promise(resolve=>{const t=d.transaction('data','readwrite');t.objectStore('data').put(raw,'last');t.oncomplete=resolve;t.onerror=resolve;});}
 function toast(message){clearTimeout(toastTimer);$('toast').textContent=message;$('toast').hidden=false;toastTimer=setTimeout(()=>$('toast').hidden=true,5000);}
-function setPage(next,scroll=true){page=['overview','ranking','sources'].includes(next)?next:'overview';for(const p of ['overview','ranking','sources'])$(p+'Page').hidden=p!==page;document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===page));const titles={overview:['Efficience équipes fin AV','Les bons indicateurs pour piloter votre activité.'],ranking:['Classement des performances','Chaque collaborateur, chaque indicateur, au même endroit.'],sources:['Contrôles & sources','Des informations fiables pour lire la performance.']};$('pageTitle').textContent=titles[page][0];$('pageSubtitle').textContent=titles[page][1];if(location.hash!=='#'+page)history.replaceState(null,'','#'+page);if(scroll)window.scrollTo({top:0,behavior:'smooth'});}
+function setPage(next,scroll=true){page=['overview','ranking','podiums','sources'].includes(next)?next:'overview';for(const p of ['overview','ranking','podiums','sources'])$(p+'Page').hidden=p!==page;document.querySelectorAll('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===page));const titles={overview:['Efficience équipes fin AV','Les bons indicateurs pour piloter votre activité.'],ranking:['Classement des performances','Chaque collaborateur, chaque indicateur, au même endroit.'],podiums:['Les podiums de vos équipes','Les trois meilleures performances, dans chaque équipe et au général.'],sources:['Contrôles & sources','Des informations fiables pour lire la performance.']};$('pageTitle').textContent=titles[page][0];$('pageSubtitle').textContent=titles[page][1];if(model)renderSelectionHeading();if(location.hash!=='#'+page)history.replaceState(null,'','#'+page);if(scroll)window.scrollTo({top:0,behavior:'smooth'});}
 function periodText(){return filters.week==='all'?'Cumul des semaines renseignées':`Semaine ${filters.week}`;}
 function install(raw,{keepChef=false}={}){
  currentData=raw;model=buildModel(raw);const previousChef=filters.chef;filters={week:String(model.latestWeek),chef:keepChef&&model.chefs.includes(previousChef)?previousChef:'all',search:''};
@@ -27,9 +28,11 @@ function install(raw,{keepChef=false}={}){
  $('sourceState').textContent=raw.meta?.importedAt?'Actualisé dans ce navigateur':'Fichier initial';
  $('issueBadge').textContent=model.issues.length||'';renderSources();render();
 }
-function render(){if(!model)return;currentSelection=model.selection(filters);const {rows,weeks,people}=currentSelection;const t=model.totals(rows);$('periodLabel').textContent=periodText();$('populationLabel').textContent=`${people.length} collaborateur${people.length>1?'s':''}${filters.chef!=='all'?' · '+filters.chef:''}`;
+function renderSelectionHeading(){const {weeks,people}=page==='podiums'?model.selection({week:filters.week,chef:filters.chef}):currentSelection;$('periodLabel').textContent=periodText();$('populationLabel').textContent=`${people.length} collaborateur${people.length>1?'s':''}${filters.chef!=='all'?' · '+filters.chef:''}`;
  $('selectionDate').textContent=weeks.length?`${date(model.weekStarts[weeks[0]])} — ${date(model.weekStarts[weeks.at(-1)]+6,{day:'2-digit',month:'long',year:'numeric'})}`:'Aucune semaine';
- renderKpis(t);renderTrend();renderTop();renderHours(t);renderAlerts(t);renderTable();
+}
+function render(){if(!model)return;currentSelection=model.selection(filters);const t=model.totals(currentSelection.rows);renderSelectionHeading();
+ renderKpis(t);renderTrend();renderTop();renderPodiums();renderHours(t);renderAlerts(t);renderTable();
  $('qualityText').textContent=model.duplicateEff||model.duplicateHp?`${model.duplicateEff} lignes Efficience et ${model.duplicateHp} lignes HP potentiellement en double dans le fichier. Elles restent incluses.`:model.issues.length?`${model.issues.length} point${model.issues.length>1?'s':''} à vérifier dans les quatre onglets sources.`:'Aucun point de contrôle détecté dans les quatre sources.';
 }
 function renderKpis(t){
@@ -54,6 +57,22 @@ function renderTop(){
  $('topRanking').innerHTML=rows.length?rows.map((p,i)=>`<div class="rank-row"><span class="rank-no ${i===0?'first':''}">${i+1}</span><div class="rank-main"><button class="rank-name" data-person="${esc(p.key)}">${esc(p.name)}</button><div class="rank-track"><div class="rank-fill" style="width:${Math.min(100,p[topMetric]/max*100)}%"></div></div></div><span class="rank-score">${pct(p[topMetric])}</span></div>`).join(''):'<div class="empty">Aucun résultat disponible.</div>';
  $('viewRanking').textContent=`Voir tout le classement (${currentSelection.rows.length})`;
 }
+function renderPodiums(){
+ const result=buildPodiums(model.selection({week:filters.week}).rows,{metric:podiumMetric,chef:filters.chef});
+ document.querySelectorAll('#podiumMetric button').forEach(b=>{const selected=b.dataset.podiumMetric===podiumMetric;b.classList.toggle('selected',selected);b.setAttribute('aria-pressed',String(selected));});
+ const metricName=podiumMetric==='global'?'Efficience globale':'Efficience pure';
+ const trophy='<svg viewBox="0 0 32 32" aria-hidden="true"><path d="M10 5h12v8a6 6 0 0 1-12 0V5Zm0 2H5v4a6 6 0 0 0 6 6m11-10h5v4a6 6 0 0 1-6 6M16 19v6m-6 3h12m-9-3h6"/></svg>';
+ const card=(group,title,general=false)=>{
+  const count=`${group.eligible} résultat${group.eligible>1?'s':''} disponible${group.eligible>1?'s':''} sur ${group.total}`;
+  const slots=Array.from({length:3},(_,i)=>{const p=group.leaders[i],place=i+1,label=['1re','2e','3e'][i];
+   return `<li class="podium-place place-${place}${p?'':' vacant'}"${p?` data-podium-person="${esc(p.key)}"`:''}><div class="podium-athlete"><span class="podium-medal" aria-label="${label} place">${place===1?trophy:''}<span>${place}</span></span>${p?`<button class="podium-name" data-person="${esc(p.key)}">${esc(p.name)}</button>${general?`<span class="podium-team">${esc(p.chef)}</span>`:''}<strong class="podium-score">${pct(p[podiumMetric])}</strong>${p.tied?'<span class="podium-tie">Ex æquo</span>':''}`:'<span class="podium-name">Place disponible</span><span class="podium-unavailable">Données insuffisantes</span>'}</div><div class="podium-step" aria-hidden="true">${place}</div></li>`;
+  }).join('');
+  return `<article class="podium-card${general?' podium-general':''}" aria-label="${esc(title)}"><div class="podium-card-heading"><div><p class="section-kicker">${general?'TOUTES LES ÉQUIPES':'ÉQUIPE'}</p><h${general?'2':'3'}>${esc(title)}</h${general?'2':'3'}><p class="podium-count">${count}</p></div><span class="podium-metric-label">${metricName}</span></div>${group.leaders.length?`<ol class="podium-stage" aria-label="Les trois meilleurs collaborateurs">${slots}</ol>`:'<div class="podium-empty">Aucun résultat d’efficience disponible pour cette période.</div>'}</article>`;
+ };
+ $('generalPodium').innerHTML=card(result.overall,'Podium général',true);
+ $('teamPodiumsTitle').textContent=filters.chef==='all'?'Podiums par équipe':'Podium de l’équipe sélectionnée';
+ $('teamPodiums').innerHTML=result.teams.map(team=>card(team,team.chef)).join('')||'<div class="empty">Aucune équipe disponible pour cette sélection.</div>';
+}
 function renderHours(t){const max=Math.max(t.horo,t.activity,t.allocated,t.hp,1),items=[['Horoquartz',t.horo,'#b0c3d5'],['Activité',t.activity,'#416f9e'],['Alloué',t.allocated,'#17ab94'],['HP',t.hp,'#eab667']];$('hoursChart').innerHTML=items.map(([l,v,c])=>`<div class="hours-row"><span>${l}</span><div class="hours-track"><div class="hours-fill" style="width:${v/max*100}%;background:${c}"></div></div><span class="hours-value">${hours(v)}</span></div>`).join('')+'<p class="hours-note">Heures cumulées sur les collaborateurs de la sélection. Horoquartz est présenté après déduction des absences.</p>';$('piecesBadge').textContent=`${number(t.pieces,0)} pièces bonnes`;}
 function renderAlerts(t){$('alertsSummary').innerHTML=[['gap',t.gapAlerts,'Écart Horo / Power BI','Résultat strictement supérieur à −1 h',''],['gamma',t.gammaAlerts,'Écart gamme négatif','Temps alloué inférieur au temps d’activité','warning'],['missing',t.missing,'Horoquartz manquant','Activité ou HP sans temps Horoquartz positif','info']].map(([key,count,label,sub,cls])=>`<button data-alert="${key}" class="alert-row ${cls}"><span class="alert-count">${count}</span><span class="alert-text">${label}<small>${sub}</small></span><span class="muted">Voir</span></button>`).join('');}
 function tableRows(){const alert=$('alertFilter').value;return sorted(currentSelection.rows.filter(r=>alert==='all'||alert==='gap'&&r.gap!==null&&r.gap>-1||alert==='gamma'&&r.gamma!==null&&r.gamma<0||alert==='missing'&&r.missing),$('sortMetric').value);}
@@ -67,7 +86,7 @@ function renderSources(){
  $('issuesList').innerHTML=model.issues.length?model.issues.map(i=>`<article class="issue-item"><span class="issue-type">${esc(i.type)}</span><div class="issue-main"><strong>${esc(i.name)}</strong><p>${esc(i.message)}</p>${i.rows?`<small>Lignes ${i.rows.join(', ')}</small>`:i.row?`<small>Ligne ${i.row}</small>`:''}</div></article>`).join(''):'<div class="empty">Aucun point de contrôle détecté.</div>';
 }
 function showPerson(key){
- const r=currentSelection.rows.find(p=>p.key===key);if(!r)return;$('detailName').textContent=r.name;$('detailChef').textContent=r.chef+(r.weekend?' · ÉQUIPE WEEK-END':'');$('detailPeriod').textContent=periodText()+(r.id?' · SGID '+r.id:' · SGID à compléter');
+ const r=currentSelection.rows.find(p=>p.key===key)||model.selection({week:filters.week}).rows.find(p=>p.key===key);if(!r)return;$('detailName').textContent=r.name;$('detailChef').textContent=r.chef+(r.weekend?' · ÉQUIPE WEEK-END':'');$('detailPeriod').textContent=periodText()+(r.id?' · SGID '+r.id:' · SGID à compléter');
  const m=[['Efficience pure',pct(r.pure)],['Efficience globale',pct(r.global)],['Horoquartz effectif',hours(r.horo,2)],['Hors production',hours(r.hp,2)]];
  const weekly=r.weeks.map(w=>`<tr><td>S${w.week}</td><td>${cell(w.activity)}</td><td>${cell(w.allocated)}</td><td>${cell(w.hp)}</td><td>${cell(w.horo)}</td><td>${score(w.pure)}</td><td>${score(w.global)}</td></tr>`).join('');
  const daily=r.weeks.flatMap(w=>w.daily.map(d=>`<tr><td>${date(d.date,{day:'2-digit',month:'2-digit',year:'numeric'})}</td><td>${cell(d.activity,3)}</td><td>${cell(d.allocated,3)}</td><td>${d.pieces===null?'<span class="na">n.d.</span>':number(d.pieces,0)}</td></tr>`)).join('');
@@ -85,6 +104,8 @@ $('weekFilter').addEventListener('change',e=>{filters.week=e.target.value;render
 $('resetFilters').addEventListener('click',()=>{filters={week:String(model.latestWeek),chef:'all',search:''};$('weekFilter').value=filters.week;$('chefFilter').value='all';$('searchInput').value='';$('alertFilter').value='all';render();});
 $('sortMetric').addEventListener('change',renderTable);$('alertFilter').addEventListener('change',renderTable);
 $('topMetric').addEventListener('click',e=>{const b=e.target.closest('[data-metric]');if(b){topMetric=b.dataset.metric;renderTop();}});
+$('podiumMetric').addEventListener('click',e=>{const b=e.target.closest('[data-podium-metric]');if(b){podiumMetric=b.dataset.podiumMetric;renderPodiums();}});
+$('viewPodiums').addEventListener('click',()=>{podiumMetric=topMetric;renderPodiums();setPage('podiums');});
 $('viewRanking').addEventListener('click',()=>{$('sortMetric').value=topMetric;$('alertFilter').value='all';renderTable();setPage('ranking');});
 $('alertsSummary').addEventListener('click',e=>{const b=e.target.closest('[data-alert]');if(b){$('alertFilter').value=b.dataset.alert;renderTable();setPage('ranking');}});
 $('qualityBanner').addEventListener('click',()=>setPage('sources'));
@@ -95,6 +116,6 @@ $('helpButton').addEventListener('click',()=>$('helpDialog').showModal());$('loa
 $('restoreButton').addEventListener('click',async()=>{install(initialData);await persist(initialData);$('importMessage').hidden=true;toast('Le fichier initial du tableau de bord est à nouveau affiché.');});
 let dragCount=0;window.addEventListener('dragenter',e=>{if([...e.dataTransfer.types].includes('Files')){e.preventDefault();dragCount++;$('dropOverlay').hidden=false;}});window.addEventListener('dragleave',e=>{e.preventDefault();if(--dragCount<=0){dragCount=0;$('dropOverlay').hidden=true;}});window.addEventListener('dragover',e=>e.preventDefault());window.addEventListener('drop',e=>{e.preventDefault();dragCount=0;$('dropOverlay').hidden=true;importFile(e.dataTransfer.files[0]);});
 window.addEventListener('hashchange',()=>setPage(location.hash.slice(1),false));
-try{initialData=window.__INITIAL_DATA__||await (await fetch('./seed.json')).json();const saved=await stored();install(saved||initialData);setPage(location.hash.slice(1)||'overview',false);}catch(e){$('importMessage').hidden=false;$('importMessage').className='import-message error';$('importMessage').textContent='Les données initiales ne sont pas disponibles. Utilisez Actualiser Excel pour charger votre classeur.';console.error(e);}
+try{initialData=window.__INITIAL_DATA__||await (await fetch('./seed.json',{cache:'no-cache'})).json();const saved=await stored();install(saved||initialData);setPage(location.hash.slice(1)||'overview',false);}catch(e){$('importMessage').hidden=false;$('importMessage').className='import-message error';$('importMessage').textContent='Les données initiales ne sont pas disponibles. Utilisez Actualiser Excel pour charger votre classeur.';console.error(e);}
 // Read-only diagnostics used by the dashboard verification. No file is written.
 window.efficienceDashboard={get model(){return model;},get selection(){return currentSelection;},get data(){return currentData;},readExcel,importFile};
