@@ -1,6 +1,6 @@
 export const EPOCH=Date.UTC(1899,11,30),DAY=86400000;
 export const clean=x=>String(x??'').replace(/\u00a0/g,' ').trim();
-export const norm=x=>clean(x).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/œ/gi,'oe').toUpperCase().replace(/[-.'’]/g,' ').replace(/\s+/g,' ').trim();
+export const norm=x=>{let n=clean(x).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/œ/gi,'oe').toUpperCase().replace(/[-.'’]/g,' ').replace(/\s+/g,' ').trim();const a=n.split(' ');if(a.length>=4&&a.length%2===0&&a.slice(0,a.length/2).join(' ')===a.slice(a.length/2).join(' '))n=a.slice(0,a.length/2).join(' ');return n;};
 const nameKey=x=>norm(x).split(' ').filter(Boolean).sort().join(' ');
 const num=x=>typeof x==='number'&&Number.isFinite(x)?x:null;
 const sum=a=>a.reduce((s,n)=>s+(n??0),0);
@@ -95,7 +95,8 @@ export function buildModel(raw){
  }
  function totals(rows){
   const validGlobal=rows.filter(r=>r.global!==null),a=sum(rows.map(r=>r.activity)),b=sum(rows.map(r=>r.allocated)),g=sum(validGlobal.map(r=>r.horo)),h=sum(validGlobal.map(r=>r.hp)),bg=sum(validGlobal.map(r=>r.allocated));
-  return {activity:a,allocated:b,pieces:sum(rows.map(r=>r.pieces)),hp:sum(rows.map(r=>r.hp)),horo:sum(rows.map(r=>r.horo)),pure:a>0?b/a:null,global:g>h?bg/(g-h):null,complete:validGlobal.length,withActivity:rows.filter(r=>r.activity!==null).length,people:rows.length,gapAlerts:rows.filter(r=>r.gap!==null&&r.gap>-1).length,gammaAlerts:rows.filter(r=>r.gamma!==null&&r.gamma<0).length,missing:rows.filter(r=>r.missing).length};
+  return {activity:a,allocated:b,pieces:sum(rows.map(r=>r.pieces)),hp:sum(rows.map(r=>r.hp)),horo:sum(rows.map(r=>r.horo)),pure:a>0?b/a:null,global:g>h?bg/(g-h):null,complete:validGlobal.length,withActivity:rows.filter(r=>r.activity!==null).length,people:rows.length,gapAlerts:rows.filter(r=>r.gap!==null&&r.gap<-1).length,gammaAlerts:rows.filter(r=>r.gamma!==null&&r.gamma<0).length,missing:rows.filter(r=>r.missing).length};
  }
  return {raw,people,issues,eff,hp,hRows,year,populated,weeks:available,weekStarts,duplicateEff,duplicateHp,weekly,selection,totals,chefs:[...new Set(people.map(p=>p.chef))].sort((a,b)=>a.localeCompare(b,'fr')),latestWeek:productionWeeks.at(-1)||populated.at(-1)||available.at(-1)||1};
 }
+
